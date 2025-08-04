@@ -1532,6 +1532,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		open_channel_fields: msgs::CommonOpenChannelFields,
 		consignment_endpoint: Option<RgbTransport>,
 		ldk_data_dir: PathBuf,
+		push_asset_amount: Option<u64>,
 	) -> Result<ChannelContext<SP>, ChannelError>
 		where
 			ES::Target: EntropySource,
@@ -1879,6 +1880,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		_logger: L,
 		consignment_endpoint: Option<RgbTransport>,
 		ldk_data_dir: PathBuf,
+		push_asset_amount: Option<u64>,
 	) -> Result<ChannelContext<SP>, APIError>
 		where
 			ES::Target: EntropySource,
@@ -7769,7 +7771,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	pub fn new<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP, counterparty_node_id: PublicKey, their_features: &InitFeatures,
 		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
-		outbound_scid_alias: u64, temporary_channel_id: Option<ChannelId>, logger: L, consignment_endpoint: Option<RgbTransport>, ldk_data_dir: PathBuf,
+		outbound_scid_alias: u64, temporary_channel_id: Option<ChannelId>, logger: L, consignment_endpoint: Option<RgbTransport>, ldk_data_dir: PathBuf, push_asset_amount: Option<u64>,
 	) -> Result<OutboundV1Channel<SP>, APIError>
 	where ES::Target: EntropySource,
 	      F::Target: FeeEstimator,
@@ -7808,6 +7810,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				logger,
 				consignment_endpoint,
 				ldk_data_dir,
+				push_asset_amount,
 			)?,
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
 		};
@@ -7974,6 +7977,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			},
 			push_msat: self.context.channel_value_satoshis * 1000 - self.context.value_to_self_msat,
 			channel_reserve_satoshis: self.context.holder_selected_channel_reserve_satoshis,
+			push_asset_amount,
 		}
 	}
 
@@ -8196,6 +8200,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 				msg.common_fields.consignment_endpoint.clone(),
 				ldk_data_dir,
+				msg.push_asset_amount,
 			)?,
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
 		};
