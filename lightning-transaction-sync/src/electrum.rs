@@ -274,8 +274,8 @@ where
 		);
 		let mut watched_txs = Vec::with_capacity(sync_state.watched_transactions.len());
 
-		for txid in &sync_state.watched_transactions {
-			match self.client.transaction_get(&txid) {
+		for (txid, watched_script_pubkey) in &sync_state.watched_transactions {
+			match self.client.transaction_get(txid) {
 				Ok(tx) => {
 					// Bitcoin Core's Merkle tree implementation has no way to discern between
 					// internal and leaf node entries. As a consequence it is susceptible to an
@@ -290,10 +290,12 @@ where
 					}
 
 					watched_txs.push((txid, tx.clone()));
-					if let Some(tx_out) = tx.output.first() {
-						// We watch an arbitrary output of the transaction of interest in order to
-						// retrieve the associated script history, before narrowing down our search
-						// through `filter`ing by `txid` below.
+					if !watched_script_pubkey.as_bytes().is_empty() {
+						watched_script_pubkeys.push(watched_script_pubkey.clone());
+					} else if let Some(tx_out) = tx.output.first() {
+						// Fall back to the first output only for transactions that were re-added
+						// during unconfirmation handling and therefore no longer have a registered
+						// script to query against.
 						watched_script_pubkeys.push(tx_out.script_pubkey.clone());
 					} else {
 						debug_assert!(false, "Failed due to retrieving invalid tx data.");
@@ -510,9 +512,9 @@ impl<L: Deref> Filter for ElectrumSyncClient<L>
 where
 	L::Target: Logger,
 {
-	fn register_tx(&self, txid: &Txid, _script_pubkey: &Script) {
+	fn register_tx(&self, txid: &Txid, script_pubkey: &Script) {
 		let mut locked_queue = self.queue.lock().unwrap();
-		locked_queue.transactions.insert(*txid);
+		locked_queue.transactions.insert(*txid, script_pubkey.to_owned().into());
 	}
 
 	fn register_output(&self, output: WatchedOutput) {

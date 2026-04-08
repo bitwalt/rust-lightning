@@ -6,18 +6,18 @@
 // accordance with one or both of these licenses.
 
 use bitcoin::block::Header;
-use bitcoin::{BlockHash, OutPoint, Transaction, Txid};
+use bitcoin::{BlockHash, OutPoint, ScriptBuf, Transaction, Txid};
 use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 use lightning::chain::{Confirm, WatchedOutput};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Deref;
 
 // Represents the current state.
 pub(crate) struct SyncState {
 	// Transactions that were previously processed, but must not be forgotten
 	// yet since they still need to be monitored for confirmation on-chain.
-	pub watched_transactions: HashSet<Txid>,
+	pub watched_transactions: HashMap<Txid, ScriptBuf>,
 	// Outputs that were previously processed, but must not be forgotten yet as
 	// as we still need to monitor any spends on-chain.
 	pub watched_outputs: HashMap<OutPoint, WatchedOutput>,
@@ -33,7 +33,7 @@ pub(crate) struct SyncState {
 impl SyncState {
 	pub fn new() -> Self {
 		Self {
-			watched_transactions: HashSet::new(),
+			watched_transactions: HashMap::new(),
 			watched_outputs: HashMap::new(),
 			outputs_spends_pending_threshold_conf: Vec::new(),
 			last_sync_hash: None,
@@ -50,7 +50,9 @@ impl SyncState {
 				c.transaction_unconfirmed(&txid);
 			}
 
-			self.watched_transactions.insert(txid);
+			self.watched_transactions
+				.entry(txid)
+				.or_insert_with(ScriptBuf::new);
 
 			// If a previously-confirmed output spend is unconfirmed, re-add the watched output to
 			// the tracking map.
@@ -102,14 +104,14 @@ impl SyncState {
 // A queue that is to be filled by `Filter` and drained during the next syncing round.
 pub(crate) struct FilterQueue {
 	// Transactions that were registered via the `Filter` interface and have to be processed.
-	pub transactions: HashSet<Txid>,
+	pub transactions: HashMap<Txid, ScriptBuf>,
 	// Outputs that were registered via the `Filter` interface and have to be processed.
 	pub outputs: HashMap<OutPoint, WatchedOutput>,
 }
 
 impl FilterQueue {
 	pub fn new() -> Self {
-		Self { transactions: HashSet::new(), outputs: HashMap::new() }
+		Self { transactions: HashMap::new(), outputs: HashMap::new() }
 	}
 
 	// Processes the transaction and output queues and adds them to the given [`SyncState`].
