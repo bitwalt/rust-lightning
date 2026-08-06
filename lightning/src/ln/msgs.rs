@@ -3397,10 +3397,10 @@ impl_writeable_msg!(UpdateAddHTLC, {
 	amount_msat,
 	payment_hash,
 	cltv_expiry,
-	onion_routing_packet,
-	rgb_payment
+	onion_routing_packet
 }, {
 	(0, blinding_point, option),
+	(1, rgb_payment, option),
 	(65537, skimmed_fee_msat, option),
 	// TODO: currently we may fail to read the `ChannelManager` if we write a new even TLV in this message
 	// and then downgrade. Once this is fixed, update the type here to match BOLTs PR 989.
