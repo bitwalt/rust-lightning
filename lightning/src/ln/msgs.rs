@@ -4087,7 +4087,9 @@ impl Writeable for UnsignedChannelUpdate {
 		self.fee_base_msat.write(w)?;
 		self.fee_proportional_millionths.write(w)?;
 		self.htlc_maximum_msat.write(w)?;
-		self.htlc_maximum_rgb.write(w)?;
+		if self.htlc_maximum_rgb > 0 {
+			self.htlc_maximum_rgb.write(w)?;
+		}
 		w.write_all(&self.excess_data[..])?;
 		Ok(())
 	}
@@ -4106,7 +4108,7 @@ impl LengthReadable for UnsignedChannelUpdate {
 			fee_base_msat: Readable::read(r)?,
 			fee_proportional_millionths: Readable::read(r)?,
 			htlc_maximum_msat: Readable::read(r)?,
-			htlc_maximum_rgb: Readable::read(r)?,
+			htlc_maximum_rgb: if r.remaining_bytes() >= 8 { Readable::read(r)? } else { 0 },
 			excess_data: read_to_end(r)?,
 		};
 		if res.message_flags & 1 != 1 {
@@ -4917,6 +4919,7 @@ mod tests {
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1000000,
 			htlc_maximum_msat: 131355275467161,
+			htlc_maximum_rgb: 0x0000777788889999,
 			fee_base_msat: 10000,
 			fee_proportional_millionths: 20,
 			excess_data: if excess_data { vec![0, 0, 0, 0, 59, 154, 202, 0] } else { Vec::new() },
