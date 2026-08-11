@@ -4026,7 +4026,9 @@ impl Writeable for UnsignedChannelAnnouncement {
 		self.node_id_2.write(w)?;
 		self.bitcoin_key_1.write(w)?;
 		self.bitcoin_key_2.write(w)?;
-		self.contract_id.write(w)?;
+		if self.contract_id.is_some() {
+			self.contract_id.write(w)?;
+		}
 		w.write_all(&self.excess_data[..])?;
 		Ok(())
 	}
@@ -4042,7 +4044,7 @@ impl LengthReadable for UnsignedChannelAnnouncement {
 			node_id_2: Readable::read(r)?,
 			bitcoin_key_1: Readable::read(r)?,
 			bitcoin_key_2: Readable::read(r)?,
-			contract_id: Readable::read(r)?,
+			contract_id: if r.remaining_bytes() > 0 { Readable::read(r)? } else { None },
 			excess_data: read_to_end(r)?,
 		})
 	}
@@ -4716,6 +4718,7 @@ mod tests {
 			node_id_2: NodeId::from_pubkey(&pubkey_2),
 			bitcoin_key_1: NodeId::from_pubkey(&pubkey_3),
 			bitcoin_key_2: NodeId::from_pubkey(&pubkey_4),
+			contract_id: None,
 			excess_data: if excess_data {
 				vec![10, 0, 0, 20, 0, 0, 30, 0, 0, 40]
 			} else {
