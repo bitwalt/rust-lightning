@@ -760,10 +760,13 @@ pub(crate) fn update_rgb_channel_amount_pending(
 	)
 }
 
-/// Whether the payment is colored
+/// Whether the outbound payment is colored
+///
+/// Only the outbound payment info counts: an inbound RGB payment sharing the hash (e.g. a HODL
+/// invoice forwarded by an outbound payment for the same hash) says nothing about what is being
+/// sent, and [`filter_first_hops`] reads the outbound info unconditionally.
 pub(crate) fn is_payment_rgb(ldk_data_dir: &Path, payment_hash: &PaymentHash) -> bool {
 	get_rgb_payment_info_path(payment_hash, ldk_data_dir, false).exists()
-		|| get_rgb_payment_info_path(payment_hash, ldk_data_dir, true).exists()
 }
 
 /// Detect the contract ID of the payment and then filter hops based on contract ID and amount
