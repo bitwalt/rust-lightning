@@ -51,6 +51,12 @@ const INBOUND_EXT: &str = "inbound";
 const OUTBOUND_EXT: &str = "outbound";
 const VANILLA_SYNC_LOOKBACK: u32 = 20;
 
+/// Test-only hook: if set to `(ldk_data_dir, n)`, the RGB coloring of the node using that
+/// directory skips `n` colorings and then fails the next one.
+#[cfg(any(test, feature = "_rln_test_hooks"))]
+pub static FAIL_RGB_COLORING: std::sync::Mutex<Option<(PathBuf, usize)>> =
+	std::sync::Mutex::new(None);
+
 /// RGB channel info
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RgbInfo {
@@ -239,6 +245,47 @@ pub(crate) fn colored_commit_tx_fee_sat(
 		/ 1000
 }
 
+/// Color a transaction with the RGB wallet and consume the resulting fascia.
+///
+/// Any failure is returned as a [`ChannelError::Close`] so that the channel is failed instead of
+/// taking the whole node down.
+fn _color_tx(
+	tx: &Transaction, coloring_info: ColoringInfo, ldk_data_dir: &Path,
+) -> Result<Transaction, ChannelError> {
+	let coloring_err = |e: String| ChannelError::close(format!("RGB coloring failed: {e}"));
+	#[cfg(any(test, feature = "_rln_test_hooks"))]
+	{
+		let mut hook = FAIL_RGB_COLORING.lock().unwrap();
+		if let Some((dir, skip)) = hook.as_mut() {
+			if ldk_data_dir.ends_with(dir.as_path()) {
+				if *skip == 0 {
+					*hook = None;
+					return Err(coloring_err("TEST: forced failure".to_owned()));
+				}
+				*skip -= 1;
+			}
+		}
+	}
+	let psbt = Psbt::from_unsigned_tx(tx.clone()).map_err(|e| coloring_err(e.to_string()))?;
+	let mut psbt =
+		RgbLibPsbt::from_str(&psbt.to_string()).map_err(|e| coloring_err(e.to_string()))?;
+	let handle = Handle::current();
+	let _ = handle.enter();
+	let wallet = futures::executor::block_on(_get_rgb_wallet(ldk_data_dir));
+	let (fascia, _) =
+		wallet.color_psbt(&mut psbt, coloring_info).map_err(|e| coloring_err(e.to_string()))?;
+	let psbt = Psbt::from_str(&psbt.to_string()).map_err(|e| coloring_err(e.to_string()))?;
+	let modified_tx = match psbt.extract_tx() {
+		Ok(tx) => tx,
+		Err(ExtractTxError::MissingInputValue { tx }) => tx,
+		Err(e) => return Err(coloring_err(e.to_string())),
+	};
+	wallet
+		.consume_fascia(fascia, Some(WitnessOrd::Ignored))
+		.map_err(|e| coloring_err(e.to_string()))?;
+	Ok(modified_tx)
+}
+
 /// Color commitment transaction
 pub(crate) fn color_commitment<SP: Deref>(
 	channel_context: &ChannelContext<SP>, funding_scope: &FundingScope,
@@ -365,23 +412,10 @@ where
 		static_blinding: Some(STATIC_BLINDING),
 		nonce: None,
 	};
-	let psbt = Psbt::from_unsigned_tx(commitment_tx.clone()).unwrap();
-	let mut psbt = RgbLibPsbt::from_str(&psbt.to_string()).unwrap();
-	let handle = Handle::current();
-	let _ = handle.enter();
-	let wallet = futures::executor::block_on(_get_rgb_wallet(ldk_data_dir));
-	let (fascia, _) = wallet.color_psbt(&mut psbt, coloring_info).unwrap();
-	let psbt = Psbt::from_str(&psbt.to_string()).unwrap();
-	let modified_tx = match psbt.extract_tx() {
-		Ok(tx) => tx,
-		Err(ExtractTxError::MissingInputValue { tx }) => tx,
-		Err(e) => panic!("should never happen: {e}"),
-	};
+	let modified_tx = _color_tx(&commitment_tx, coloring_info, ldk_data_dir)?;
 
 	let txid = modified_tx.compute_txid();
 	commitment_transaction.built = BuiltCommitmentTransaction { transaction: modified_tx, txid };
-
-	wallet.consume_fascia(fascia.clone(), Some(WitnessOrd::Ignored)).unwrap();
 
 	// save RGB transfer data to disk
 	let transfer_info = TransferInfo { contract_id, output_map };
@@ -400,10 +434,19 @@ pub(crate) fn color_htlc(
 	}
 	let (_, htlc_amount_rgb) = htlc.rgb_payment.expect("this HTLC has RGB assets");
 
-	let consignment_htlc_outpoint = htlc_tx.input.first().unwrap().previous_output;
+	let consignment_htlc_outpoint = htlc_tx
+		.input
+		.first()
+		.ok_or_else(|| ChannelError::close("HTLC transaction has no inputs".to_owned()))?
+		.previous_output;
 	let commitment_txid = consignment_htlc_outpoint.txid.to_string();
 
 	let transfer_info_path = ldk_data_dir.join(format!("{commitment_txid}_transfer_info"));
+	if !transfer_info_path.exists() {
+		return Err(ChannelError::close(format!(
+			"RGB coloring failed: missing transfer info for commitment {commitment_txid}"
+		)));
+	}
 	let transfer_info = read_rgb_transfer_info(&transfer_info_path);
 	let contract_id = transfer_info.contract_id;
 
@@ -417,21 +460,8 @@ pub(crate) fn color_htlc(
 		static_blinding: Some(STATIC_BLINDING),
 		nonce: Some(1),
 	};
-	let psbt = Psbt::from_unsigned_tx(htlc_tx.clone()).unwrap();
-	let mut psbt = RgbLibPsbt::from_str(&psbt.to_string()).unwrap();
-	let handle = Handle::current();
-	let _ = handle.enter();
-	let wallet = futures::executor::block_on(_get_rgb_wallet(ldk_data_dir));
-	let (fascia, _) = wallet.color_psbt(&mut psbt, coloring_info).unwrap();
-	let psbt = Psbt::from_str(&psbt.to_string()).unwrap();
-	let modified_tx = match psbt.extract_tx() {
-		Ok(tx) => tx,
-		Err(ExtractTxError::MissingInputValue { tx }) => tx,
-		Err(e) => panic!("should never happen: {e}"),
-	};
+	let modified_tx = _color_tx(htlc_tx, coloring_info, ldk_data_dir)?;
 	let txid = &modified_tx.compute_txid();
-
-	wallet.consume_fascia(fascia.clone(), Some(WitnessOrd::Ignored)).unwrap();
 
 	// save RGB transfer data to disk
 	let transfer_info = TransferInfo { contract_id, output_map };
@@ -482,23 +512,10 @@ pub(crate) fn color_closing(
 		static_blinding: Some(STATIC_BLINDING),
 		nonce: None,
 	};
-	let psbt = Psbt::from_unsigned_tx(closing_tx.clone()).unwrap();
-	let mut psbt = RgbLibPsbt::from_str(&psbt.to_string()).unwrap();
-	let handle = Handle::current();
-	let _ = handle.enter();
-	let wallet = futures::executor::block_on(_get_rgb_wallet(ldk_data_dir));
-	let (fascia, _) = wallet.color_psbt(&mut psbt, coloring_info).unwrap();
-	let psbt = Psbt::from_str(&psbt.to_string()).unwrap();
-	let modified_tx = match psbt.extract_tx() {
-		Ok(tx) => tx,
-		Err(ExtractTxError::MissingInputValue { tx }) => tx,
-		Err(e) => panic!("should never happen: {e}"),
-	};
+	let modified_tx = _color_tx(&closing_tx, coloring_info, ldk_data_dir)?;
 
 	let txid = &modified_tx.compute_txid();
 	closing_transaction.built = modified_tx;
-
-	wallet.consume_fascia(fascia.clone(), Some(WitnessOrd::Ignored)).unwrap();
 
 	// save RGB transfer data to disk
 	let transfer_info = TransferInfo { contract_id, output_map };
