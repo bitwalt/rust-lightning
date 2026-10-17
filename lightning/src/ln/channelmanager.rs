@@ -6230,8 +6230,8 @@ where
 		let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger);
 		let (mut chan, msg_opt) = match funding_res {
 			Ok(funding_msg) => (chan, funding_msg),
-			Err((mut chan, chan_err)) => {
-				let api_err = APIError::ChannelUnavailable { err: "Signer refused to sign the initial commitment transaction".to_owned() };
+			Err(chan_err) => {
+				let api_err = APIError::ChannelUnavailable { err: format!("Failed to build the initial commitment transaction: {chan_err}") };
 				return abandon_chan!(chan_err, api_err, chan);
 			}
 		};
