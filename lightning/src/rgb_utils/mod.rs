@@ -365,23 +365,28 @@ where
 		static_blinding: Some(STATIC_BLINDING),
 		nonce: None,
 	};
-	let psbt = Psbt::from_unsigned_tx(commitment_tx.clone()).unwrap();
-	let mut psbt = RgbLibPsbt::from_str(&psbt.to_string()).unwrap();
+	let coloring_err = |e: String| ChannelError::close(format!("RGB coloring failed: {e}"));
+	let psbt = Psbt::from_unsigned_tx(commitment_tx.clone()).map_err(|e| coloring_err(e.to_string()))?;
+	let mut psbt =
+		RgbLibPsbt::from_str(&psbt.to_string()).map_err(|e| coloring_err(e.to_string()))?;
 	let handle = Handle::current();
 	let _ = handle.enter();
 	let wallet = futures::executor::block_on(_get_rgb_wallet(ldk_data_dir));
-	let (fascia, _) = wallet.color_psbt(&mut psbt, coloring_info).unwrap();
-	let psbt = Psbt::from_str(&psbt.to_string()).unwrap();
+	let (fascia, _) =
+		wallet.color_psbt(&mut psbt, coloring_info).map_err(|e| coloring_err(e.to_string()))?;
+	let psbt = Psbt::from_str(&psbt.to_string()).map_err(|e| coloring_err(e.to_string()))?;
 	let modified_tx = match psbt.extract_tx() {
 		Ok(tx) => tx,
 		Err(ExtractTxError::MissingInputValue { tx }) => tx,
-		Err(e) => panic!("should never happen: {e}"),
+		Err(e) => return Err(coloring_err(e.to_string())),
 	};
+
+	wallet
+		.consume_fascia(fascia, Some(WitnessOrd::Ignored))
+		.map_err(|e| coloring_err(e.to_string()))?;
 
 	let txid = modified_tx.compute_txid();
 	commitment_transaction.built = BuiltCommitmentTransaction { transaction: modified_tx, txid };
-
-	wallet.consume_fascia(fascia.clone(), Some(WitnessOrd::Ignored)).unwrap();
 
 	// save RGB transfer data to disk
 	let transfer_info = TransferInfo { contract_id, output_map };

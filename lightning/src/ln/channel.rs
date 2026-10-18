@@ -3183,7 +3183,7 @@ where
 			holder_commitment_point.next_transaction_number(), &holder_commitment_point.next_point(),
 			true, false, logger);
 		if self.context().is_colored() {
-			color_commitment(&self.context(), &self.funding(), &mut commitment_data.tx, false).expect("successful commitment coloring");
+			color_commitment(&self.context(), &self.funding(), &mut commitment_data.tx, false)?;
 		}
 		let initial_commitment_tx = commitment_data.tx;
 		let trusted_tx = initial_commitment_tx.trust();
@@ -3227,8 +3227,14 @@ where
 			context.counterparty_next_commitment_transaction_number,
 			&context.counterparty_next_commitment_point.unwrap(), false, false, logger);
 		if self.context().is_colored() {
-			color_commitment(&self.context(), &self.funding(), &mut commitment_data.tx, true).unwrap();
+			if let Err(e) = color_commitment(&self.context(), &self.funding(), &mut commitment_data.tx, true) {
+				if !self.funding().is_outbound() {
+					self.funding_mut().channel_transaction_parameters.funding_outpoint = None;
+				}
+				return Err(e);
+			}
 		}
+		let context = self.context();
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
@@ -6371,8 +6377,10 @@ where
 			logger,
 		);
 		if self.is_colored() {
-			color_commitment(&self, &funding, &mut commitment_data.tx, true)
-				.expect("successful commitment coloring");
+			if let Err(e) = color_commitment(&self, &funding, &mut commitment_data.tx, true) {
+				log_error!(logger, "Failed to color initial counterparty commitment: {}", e);
+				return None;
+			}
 		}
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		match self.holder_signer {
@@ -9681,11 +9689,19 @@ where
 				// handling channel_ready.
 				self.context.counterparty_next_commitment_transaction_number + 1,
 				&self.context.counterparty_next_commitment_point.unwrap(), false, false, logger);
-			if self.context.is_colored() {
-				color_commitment(&self.context, &self.funding, &mut commitment_data.tx, true).expect("successful commitment coloring");
+			let colored = if self.context.is_colored() {
+				color_commitment(&self.context, &self.funding, &mut commitment_data.tx, true)
+			} else { Ok(()) };
+			match colored {
+				Ok(()) => {
+					let counterparty_initial_commitment_tx = commitment_data.tx;
+					self.context.get_funding_signed_msg(&self.funding.channel_transaction_parameters, logger, counterparty_initial_commitment_tx)
+				},
+				Err(e) => {
+					log_error!(logger, "Failed to color initial counterparty commitment: {}", e);
+					None
+				},
 			}
-			let counterparty_initial_commitment_tx = commitment_data.tx;
-			self.context.get_funding_signed_msg(&self.funding.channel_transaction_parameters, logger, counterparty_initial_commitment_tx)
 		} else { None };
 		// Provide a `channel_ready` message if we need to, but only if we're _not_ still pending
 		// funding.
@@ -13637,12 +13653,12 @@ where
 
 	/// Only allowed after [`FundingScope::channel_transaction_parameters`] is set.
 	#[rustfmt::skip]
-	fn get_funding_created_msg<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
+	fn get_funding_created_msg<L: Deref>(&mut self, logger: &L) -> Result<Option<msgs::FundingCreated>, ChannelError> where L::Target: Logger {
 		let mut commitment_data = self.context.build_commitment_transaction(&self.funding,
 			self.context.counterparty_next_commitment_transaction_number,
 			&self.context.counterparty_next_commitment_point.unwrap(), false, false, logger);
 		if self.context.is_colored() {
-			color_commitment(&self.context, &self.funding, &mut commitment_data.tx, true).unwrap();
+			color_commitment(&self.context, &self.funding, &mut commitment_data.tx, true)?;
 		}
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		let signature = match &self.context.holder_signer {
@@ -13665,7 +13681,7 @@ where
 			self.context.signer_pending_funding = true;
 		};
 
-		signature.map(|signature| msgs::FundingCreated {
+		Ok(signature.map(|signature| msgs::FundingCreated {
 			temporary_channel_id: self.context.temporary_channel_id.unwrap(),
 			funding_txid: self.funding.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().txid,
 			funding_output_index: self.funding.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().index,
@@ -13674,7 +13690,7 @@ where
 			partial_signature_with_nonce: None,
 			#[cfg(taproot)]
 			next_local_nonce: None,
-		})
+		}))
 	}
 
 	/// Updates channel state with knowledge of the funding transaction's txid/index, and generates
@@ -13686,7 +13702,7 @@ where
 	/// If an Err is returned, it is a ChannelError::Close.
 	#[rustfmt::skip]
 	pub fn get_funding_created<L: Deref>(&mut self, funding_transaction: Transaction, funding_txo: OutPoint, is_batch_funding: bool, logger: &L)
-	-> Result<Option<msgs::FundingCreated>, (Self, ChannelError)> where L::Target: Logger {
+	-> Result<Option<msgs::FundingCreated>, ChannelError> where L::Target: Logger {
 		if !self.funding.is_outbound() {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
 		}
@@ -13721,8 +13737,7 @@ where
 		self.funding.funding_transaction = Some(funding_transaction);
 		self.context.is_batch_funding = is_batch_funding.then_some(());
 
-		let funding_created = self.get_funding_created_msg(logger);
-		Ok(funding_created)
+		self.get_funding_created_msg(logger)
 	}
 
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
@@ -13894,7 +13909,10 @@ where
 		} else { None };
 		let funding_created = if self.context.signer_pending_funding && self.funding.is_outbound() {
 			log_trace!(logger, "Attempting to generate pending funding created...");
-			self.get_funding_created_msg(logger)
+			self.get_funding_created_msg(logger).unwrap_or_else(|e| {
+				log_error!(logger, "Failed to generate pending funding created: {}", e);
+				None
+			})
 		} else { None };
 		(open_channel, funding_created)
 	}
